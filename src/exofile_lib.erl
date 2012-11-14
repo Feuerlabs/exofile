@@ -453,11 +453,11 @@ bin_duplicate(Bin, Size) ->
     end.
 
 write_data_(Fd,Offset,Bytes) ->
-    io:format("pwrite: offs=~w, data=~w\n", [Offset,Bytes]),
+    %% io:format("pwrite: offs=~w, data=~w\n", [Offset,Bytes]),
     file:pwrite(Fd, Offset, Bytes).
 
 read_data_(Fd,Offset,Size) ->
-    io:format("pread: offs=~w, size=~w\n", [Offset,Size]),
+    %% io:format("pread: offs=~w, size=~w\n", [Offset,Size]),
     file:pread(Fd,Offset,Size).
 
 

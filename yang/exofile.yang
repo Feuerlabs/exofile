@@ -107,6 +107,11 @@ module exofile {
 	    leaf transfer-id {
 		type string;
 	    }
+            leaf n {
+                description "Number of ranges to fetch";
+                type uint32;
+		default 5;
+            }
 	    leaf file-size { 
 		type uint64; 
 		default 0;
@@ -124,7 +129,7 @@ module exofile {
 		container error {
 		    leaf reason { type string; }
 		}
-		container mssing {
+		container missing {
 		    uses transfer-ranges;
 		}		    
 		leaf ok { 

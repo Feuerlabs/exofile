@@ -71,6 +71,7 @@ stop() ->
     gen_server:call(?SERVER, 
 		    {'transfer-final',
 		     proplists:get_value('transfer-id', Args),
+		     proplists:get_value('n', Args, 5),
 		     proplists:get_value('file-size', Args),
 		     proplists:get_value('file-name', Args),
 		     proplists:get_value('sha1-digest', Args)

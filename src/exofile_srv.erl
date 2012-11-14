@@ -172,10 +172,13 @@ handle_call({'chunk-list-transfered', ID, N, Offset},_From,State) ->
 handle_call({'chunk-list-missing',ID,N,Offset,FileSize},_From,State) ->
     case cache_find(ID, State) of
 	{ok, H} ->
-	    Universe = exofile_iset:from_list([0,FileSize-1]),
-	    Missing  = exofile_iset:subtract(Universe, H#file_handle.iset),
-	    Items = get_chunk_list(N, Offset, Missing),
-	    {reply, {ok, [{'ranges', Items}]}, State};
+	    case get_missing_chunks(H, FileSize) of
+		Error = {error, _} ->
+		    {reply, Error, State};
+		{ok,Missing} ->
+		    Items = get_chunk_list(N, Offset, Missing),
+		    {reply, {ok, [{'ranges', Items}]}, State}
+	    end;
 	Error ->
 	    {reply, Error, State}
     end;
@@ -201,10 +204,8 @@ handle_call({'transfer-init',
 	    H = #file_handle { id=ID, fd=Fd, ts=timestamp(), 
 			       iset=exofile_iset:new(), meta=Meta},
 	    case chunk_save(H, {meta, FileSizeHint, ChunkSize, FileType,
-				FileNameHint, FileMode}, undefined) of
-		{ok,H1} ->
-		    Cache = [H1|State#state.cache],
-		    State1 = State#state { cache = Cache },
+				FileNameHint, FileMode}, State) of
+		{ok, State1} ->
 		    {reply, {ok,[{'transfer-id',ID},
 				 {'chunk-size',ChunkSize}]}, State1};
 		Error ->
@@ -217,18 +218,23 @@ handle_call({'transfer-init',
     end;
 
 handle_call({'transfer-final',
-	     ID,              %% file cache id
-	     _FileSize,        %% non_neg_integer(), Final file size, 
+	     ID,               %% file cache id
+	     N,                %% max list of missing chunks if not ready
+	     FileSize,         %% non_neg_integer(), Final file size, 
 	     _SHA1,            %% non_neg_integer(), SHA1 over file data
 	     _FileName         %% string(), local name hint, "" if unknown
 	    }, _From, State) ->
-    case cache_open(ID, State) of
-	{{ok,H},State1} ->
-	    case is_file_complete(H) of
-		true ->
-		    {reply, ok, State1};
-		false ->
-		    {reply, {error,not_complete}, State1}
+    case cache_find(ID, State) of
+	{ok,H} ->
+	    case get_missing_chunks(H, FileSize) of
+		{error,Reason} -> %% atom | string?
+		    {reply, {error,Reason}, State};
+		{ok,[]} ->
+		    %% move chunks to "final" destination
+		    {reply, ok, State};
+		{ok,Missing} ->
+		    Items = get_chunk_list(N, 0, Missing),
+		    {reply, {missing, [{'ranges',Items}]}, State}
 	    end;
 	{Error,State1} ->
 	    {reply, Error, State1}
@@ -301,6 +307,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+get_file_size(H, 0) ->
+    case (H#file_handle.meta)#file_meta.file_size of
+	0 -> exofile_iset:last(H#file_handle.iset) + 1;
+	Size -> Size
+    end;
+get_file_size(_H, Size) ->
+    Size.
+    
 %% pow2 - return nearest power of 2 less than X
 pow2(0) -> 0;
 pow2(N) when is_integer(N), N > 0 -> pow2(1, N).
@@ -336,7 +350,6 @@ close_file(Fd) ->
 delete_file(Dir, ID) ->
     file:delete(filename:join(Dir,ID)).
 
-
 cache_find(ID, State) ->
     case lists:keyfind(ID, #file_handle.id, State#state.cache) of
 	false ->
@@ -345,10 +358,18 @@ cache_find(ID, State) ->
 	    {ok,H}
     end.
 
+%% set or insert new file handle into cache
 cache_set(H, State) ->
     ID = H#file_handle.id, 
-    Cache = lists:keyreplace(ID, #file_handle.id, State#state.cache, H),
-    State#state { cache = Cache}.
+    case lists:keymember(ID, #file_handle.id, State#state.cache) of
+	true ->
+	    Cache = lists:keyreplace(ID, #file_handle.id, State#state.cache, H),
+	    State#state { cache = Cache };
+	false ->
+	    Cache = State#state.cache ++ [H],
+	    State#state { cache = Cache }
+    end.
+
 
 %% close file assoicated with ID, but keep in cache
 cache_close(ID, State) ->
@@ -420,6 +441,7 @@ cache_load_items(Dir, [File|Files], Lost, Cache) ->
 		{ok, H} ->
 		    cache_load_items(Dir, Files, Lost, [H|Cache]);
 		_Error ->
+		    io:format("Error loading ~s : ~p\n", [File,_Error]),
 		    cache_load_items(Dir, Files, [File|Lost], Cache)
 	    end;
 	false ->
@@ -432,7 +454,7 @@ cache_load_items(_Dir, [], Lost, Cache) ->
     Cache.
 
 load_cache_file(Dir, ID) ->
-    case file:open(filename:join(Dir, ID), [read,binary]) of
+    case file:open(filename:join(Dir, ID), [raw,read,binary]) of
 	{ok,Fd} ->
 	    H = #file_handle { id=ID, iset=exofile_iset:new()},
 	    Result = load_cache_fd(Fd, H),
@@ -460,14 +482,17 @@ load_cache_fd(Fd, H) ->
 			    {error, bad_crc}
 		    end;
 		{ok, _} ->
+		    io:format("truncated 1:\n", []),
 		    {error, truncated_record};
 		Error ->
 		    Error
 	    end;
-	{ok, <<1,Size:32>>} -> %% skip raw binary data (maybe verify this?)
-	    file:position(Fd, {cur, Size}),
+	{ok, <<1,Size:32>>} ->
+	    %% skip raw binary data (maybe verify this?)
+	    file:position(Fd, {cur, Size+4}),
 	    load_cache_fd(Fd, H);
 	{ok, _} ->
+	    io:format("truncated 2:\n", []),
 	    {error, truncated_record}
     end.
 
@@ -523,9 +548,6 @@ update_iset(Operation, ISet) ->
 	    ISet
     end.
 	
-is_file_complete(_H) ->
-    false.
-
 is_cache_file(File) ->
     case File of
 	[A,B,C,D,E,F] ->
@@ -539,7 +561,21 @@ is_cache_file(File) ->
 	    false
     end.
 
+%% given FileSize (if 0 then check meta and then iset)
+get_missing_chunks(H, FileSize) ->
+    case get_file_size(H, FileSize) of
+	0 -> 
+	    {error, badarg};
+	FileSize1 ->
+	    Universe = exofile_iset:from_list([{0,FileSize1-1}]),
+	    Missing  = exofile_iset:difference(Universe, 
+					       H#file_handle.iset),
+	    {ok,Missing}
+    end.
+
 %% get N ranges interval given a starting point
+get_chunk_list(_N, _Offset, []) ->
+    [];
 get_chunk_list(N, Offset, ISet) ->
     Mask = exofile_iset:from_list([{Offset,exofile_iset:last(ISet)}]),
     A    = exofile_iset:intersect(Mask, ISet),
@@ -577,6 +613,13 @@ chunk_save(H, Term, State) ->
 	    {Error, State}
     end.
 
+chunk_save(H, C={meta,
+		 _FileSizeHint, 
+		 _ChunkSize, 
+		 _FileType,
+		 _FileNameHint, 
+		 _FileMode}) ->
+    chunk_save_(H, C, undefined);
 chunk_save(H, {write,Offset,Size,Data}) when
       is_integer(Offset), Offset>=0, is_binary(Data) ->
     chunk_save_(H, {write,Offset,Size,'_'}, Data);
@@ -608,7 +651,8 @@ chunk_save_(H, Term, Data) ->
 	    case save_bin_chunk(Fd, 1, Data) of
 		ok ->
 		    {ok, update_cache_iset(Term, H)};
-		Error -> Error
+		Error -> 
+		    Error
 	    end;
 	Error -> Error
     end.
