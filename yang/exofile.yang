@@ -1,0 +1,334 @@
+module exofile {
+
+    namespace "http://feuerlabs.com/exofile";
+    prefix xf;
+
+    organization
+	"Feuerlabs Inc";
+
+    contact
+	"Tony Rogvall <tony@feuerlabs.com>";
+
+    description "File transfer operations";
+
+    revision 2012-11-07 {
+       description
+         "Initial revision.";
+    }
+
+    grouping transfer-result {
+	choice result {
+	    container error {
+		leaf reason { type string; }
+	    }
+	    leaf ok { 
+		type empty; 
+	    }
+	}
+    }
+
+    grouping transfer-ranges {
+	list ranges {
+	    key "id";
+	    leaf id     { type uint32; }
+	    leaf offset { type uint64; }
+	    leaf size   { type uint64; }
+	}
+    }
+
+
+    rpc transfer-list {
+        description "List transfers, N entries at a time";
+
+        input {
+            leaf n {
+                description "Number of entries to fetch";
+                type uint32;
+		default 5;
+            }
+            leaf previous {
+	      description "Previous transfer ID; \"\" if from beginning";
+	      type string;
+	      default "";
+            }
+        }
+        output {
+            leaf-list transfers {
+		type string;
+	    }
+        }
+    }
+
+    rpc transfer-init {
+	input {
+	    leaf file-size-hint { 
+		type uint64; 
+		default 0;
+	    }
+	    leaf chunk-size-hint { 
+		type uint32;
+		default 0;
+	    }
+	    leaf file-type {
+		type string;
+		default "application/octet-stream";
+	    }
+	    leaf file-name-hint {
+		type string;
+		default "";
+	    }
+	    leaf file-mode {
+		type enumeration {
+		    enum read;
+		    enum read_write;
+		    enum write;
+		}
+	    }
+	}
+	output {
+	    choice result {
+		container error {
+		    leaf reason { type string; }
+		}
+		container ok {
+		    leaf chunk-size {
+			type uint32;
+		    }
+		    leaf transfer-id {
+			type string;  // 123456 (six decimal digits)
+		    }
+		}
+	    }
+	}
+    }
+
+    rpc transfer-final {
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf file-size { 
+		type uint64; 
+		default 0;
+	    }
+	    leaf file-name {
+		type string;
+		default "";
+	    }
+	    leaf sha1-digest {
+		type string;
+	    }
+	}
+	output {
+	    choice result {
+		container error {
+		    leaf reason { type string; }
+		}
+		container mssing {
+		    uses transfer-ranges;
+		}		    
+		leaf ok { 
+		    type empty; 
+		}
+	    }
+	}
+    }
+
+    rpc transfer-cancel {
+	description "stop and cleanup the transfer";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-write {
+	description "write data to file at offset";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf data {
+		type binary;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-read {
+	description "read 'size' bytes from file starting from 'offset'";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf size {
+		type uint64;
+	    }
+	}
+	output {
+	    choice result {
+		container error {
+		    leaf reason { type string; }
+		}
+		container ok {
+		    leaf data  { type binary; }
+		}
+	    }
+	}
+    }
+
+    rpc chunk-insert {
+	description "insert data at offset into file";	
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf data {
+		type binary;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-delete {
+	description "delete portion of file";	
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf size {
+		type uint64;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-fill {
+	description "fill file with size data from pattern
+	             starting from offset";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf size { 
+		type uint64;
+	    }
+	    leaf data {
+		type binary;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-insfill {
+	description "insert size bytes from pattern into file";
+
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+	    leaf offset { 
+		type uint64;
+	    }
+	    leaf size { 
+		type uint64;
+	    }
+	    leaf data {
+		type binary;
+	    }
+	}
+	output {
+	    uses transfer-result;
+	}
+    }
+
+    rpc chunk-list-transfered {
+	description "List ranges that are already transfered";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+            leaf n {
+                description "Number of ranges to fetch";
+                type uint32;
+		default 5;
+            }
+	    leaf offset {
+		description "Offset to start seach from";
+                type uint32;
+		default 0;
+	    }
+	}
+	output {
+	    choice result {
+		container error {
+		    leaf reason { type string; }
+		}
+		container ok {
+		    uses transfer-ranges;
+		}
+	    }
+	}
+    }
+
+    rpc chunk-list-missing {
+	description "List ranges that are not transfered";
+	input {
+	    leaf transfer-id {
+		type string;
+	    }
+            leaf n {
+                description "Number of ranges to fetch";
+                type uint32;
+		default 5;
+            }
+	    leaf offset {
+		description "Offset to start seach from";
+                type uint64;
+		default 0;
+	    }
+	    leaf size {
+		description "Size of file";
+		type uint64;
+		mandatory true;
+	    }
+	}
+	output {
+	    choice result {
+		container error {
+		    leaf reason { type string; }
+		}
+		container ok {
+		    uses transfer-ranges;
+		}
+	    }
+	}
+    }
+}
