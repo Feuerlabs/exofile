@@ -194,8 +194,8 @@ handle_call({'transfer-init',
 		    min(pow2(ChunkSizeHint), pow2(?MAX_CHUNK_SIZE))),
     Meta = #file_meta {file_size=FileSizeHint, 
 		       chunk_size=ChunkSize,
-		       file_type=FileType, 
-		       file_name=FileNameHint, 
+		       file_type=FileType,
+		       file_name=FileNameHint,
 		       file_mode=FileMode},
     ID = create_file_id(Dir),
     case open_file(Dir, ID, FileMode) of
@@ -221,8 +221,8 @@ handle_call({'transfer-final',
 	     ID,               %% file cache id
 	     N,                %% max list of missing chunks if not ready
 	     FileSize,         %% non_neg_integer(), Final file size, 
-	     _SHA1,            %% non_neg_integer(), SHA1 over file data
-	     _FileName         %% string(), local name hint, "" if unknown
+	     FileName,         %% string(), local name hint, "" if unknown
+	     SHA1              %% string()  hex asci SHA1 over file data
 	    }, _From, State) ->
     case cache_find(ID, State) of
 	{ok,H} ->
@@ -231,7 +231,14 @@ handle_call({'transfer-final',
 		    {reply, {error,Reason}, State};
 		{ok,[]} ->
 		    %% move chunks to "final" destination
-		    {reply, ok, State};
+		    %% should probably run this in a process !
+		    case create_target(H, SHA1, FileName, State) of
+			ok ->
+			    State1 = cache_delete(H#file_handle.id, State),
+			    {reply, ok, State1};
+			Error ->
+			    {reply, Error, State}
+		    end;
 		{ok,Missing} ->
 		    Items = get_chunk_list(N, 0, Missing),
 		    {reply, {missing, [{'ranges',Items}]}, State}
@@ -306,6 +313,33 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+create_target(H, SHA1, FileName, State) ->
+    if H#file_handle.fd =:= undefined ->
+	    case open_file(State#state.dir, H#file_handle.id, read_write) of
+		{ok,Fd} ->
+		    Res = create_from_chunks(Fd, SHA1, FileName),
+		    file:close(Fd),
+		    Res;
+		Error -> Error
+	    end;
+       true ->
+	    create_from_chunks(H#file_handle.fd, SHA1, FileName)
+    end.
+
+create_from_chunks(Fd, _SHA1, FileName) ->
+    TempName = exofile_lib:tmpnam(),
+    try run_file_chunks(Fd, TempName) of
+	ok ->
+	    io:format("Rename(not): ~s => ~s\n", [TempName, FileName]),
+	    ok;
+	Error ->
+	    Error
+    catch
+	error:Reason ->
+	    {error, Reason} %% may be not
+    end.
+
 
 get_file_size(H, 0) ->
     case (H#file_handle.meta)#file_meta.file_size of
